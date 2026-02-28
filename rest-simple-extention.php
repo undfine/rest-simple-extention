@@ -45,26 +45,15 @@ if ( ! class_exists( 'Rest_Simple_Extention_Plugin' ) ) {
 				return;
 			}
 
-			$taxonomies = apply_filters( 'rest_extended_default_taxonomies', array( 'category' ), $post_types );
-			if ( ! is_array( $taxonomies ) ) {
-				$taxonomies = array( 'category' );
-			}
-
-			foreach ( $taxonomies as $taxonomy ) {
-				if ( ! is_string( $taxonomy ) || ! taxonomy_exists( $taxonomy ) ) {
-					continue;
-				}
-
-				register_rest_field(
-					$post_types,
-					$taxonomy,
-					array(
-						'get_callback'    => array( __CLASS__, 'get_rest_terms' ),
-						'update_callback' => null,
-						'schema'          => self::terms_schema(),
-					)
-				);
-			}
+			register_rest_field(
+				$post_types,
+				'taxonomies',
+				array(
+					'get_callback'    => array( __CLASS__, 'get_rest_taxonomies' ),
+					'update_callback' => null,
+					'schema'          => self::taxonomies_schema(),
+				)
+			);
 
 			register_rest_field(
 				$post_types,
@@ -78,30 +67,52 @@ if ( ! class_exists( 'Rest_Simple_Extention_Plugin' ) ) {
 		}
 
 		/**
-		 * Returns taxonomy term names for a REST object.
+		 * Returns taxonomy terms grouped by taxonomy for a REST object.
 		 *
 		 * @param array           $object     Prepared object data.
 		 * @param string          $field_name Requested field name.
 		 * @param WP_REST_Request $request    REST request object.
 		 *
-		 * @return array
+		 * @return array<string, array>
 		 */
-		public static function get_rest_terms( $object, $field_name, $request ) {
-			unset( $request );
+		public static function get_rest_taxonomies( $object, $field_name, $request ) {
+			unset( $field_name, $request );
 
-			$taxonomy = is_string( $field_name ) && $field_name ? $field_name : 'category';
 			$post_id  = isset( $object['id'] ) ? absint( $object['id'] ) : 0;
+			$post_type = $post_id ? get_post_type( $post_id ) : '';
 
-			if ( ! $post_id || ! taxonomy_exists( $taxonomy ) ) {
+			if ( ! $post_id || ! is_string( $post_type ) || '' === $post_type ) {
 				return array();
 			}
 
-			$terms = get_the_terms( $post_id, $taxonomy );
-			if ( empty( $terms ) || is_wp_error( $terms ) ) {
+			$taxonomies = get_object_taxonomies( $post_type, 'names' );
+			if ( empty( $taxonomies ) || ! is_array( $taxonomies ) ) {
 				return array();
 			}
 
-			return array_values( wp_list_pluck( $terms, 'name' ) );
+			$allowed_taxonomies = apply_filters( 'rest_extended_default_taxonomies', $taxonomies, array( $post_type ) );
+			if ( ! is_array( $allowed_taxonomies ) ) {
+				$allowed_taxonomies = $taxonomies;
+			}
+
+			$allowed_lookup = array_fill_keys( array_filter( $allowed_taxonomies, 'is_string' ), true );
+			$results        = array();
+
+			foreach ( $taxonomies as $taxonomy ) {
+				if ( ! isset( $allowed_lookup[ $taxonomy ] ) || ! taxonomy_exists( $taxonomy ) ) {
+					continue;
+				}
+
+				$terms = get_the_terms( $post_id, $taxonomy );
+				if ( empty( $terms ) || is_wp_error( $terms ) ) {
+					$results[ $taxonomy ] = array();
+					continue;
+				}
+
+				$results[ $taxonomy ] = array_values( wp_list_pluck( $terms, 'name' ) );
+			}
+
+			return $results;
 		}
 
 		/**
@@ -117,7 +128,7 @@ if ( ! class_exists( 'Rest_Simple_Extention_Plugin' ) ) {
 			unset( $field_name, $request );
 
 			$image_id = isset( $object['featured_media'] ) ? absint( $object['featured_media'] ) : 0;
-			if ( ! $image_id ) {
+			if ( ! $image_id || ! wp_attachment_is_image( $image_id ) ) {
 				return array();
 			}
 
@@ -149,17 +160,20 @@ if ( ! class_exists( 'Rest_Simple_Extention_Plugin' ) ) {
 		}
 
 		/**
-		 * Schema for taxonomy terms REST fields.
+		 * Schema for grouped taxonomies REST field.
 		 *
 		 * @return array
 		 */
-		private static function terms_schema() {
+		private static function taxonomies_schema() {
 			return array(
-				'description' => __( 'Assigned term names for this taxonomy.', 'rest-simple-extention' ),
-				'type'        => 'array',
+				'description' => __( 'Assigned taxonomy term names grouped by taxonomy slug.', 'rest-simple-extention' ),
+				'type'        => 'object',
 				'context'     => array( 'view', 'edit' ),
-				'items'       => array(
-					'type' => 'string',
+				'additionalProperties' => array(
+					'type'  => 'array',
+					'items' => array(
+						'type' => 'string',
+					),
 				),
 			);
 		}
